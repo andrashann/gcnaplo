@@ -2,7 +2,11 @@
 <html>
   <head>
     <title>GeoNapló</title>
-    <script defer data-domain="hann.io" src="https://plausible.io/js/script.js"></script>
+    <script
+      defer
+      data-domain="hann.io"
+      src="https://plausible.io/js/script.js"
+    ></script>
     <link
       rel="stylesheet"
       href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"
@@ -152,6 +156,18 @@
           Fontos tudnivalók
         </a>
 
+        <div class="form-check form-switch mt-3">
+          <input
+            class="form-check-input"
+            type="checkbox"
+            id="groupLines"
+            onchange="this.checked ? connectGroups() : disconnectGroups()"
+          />
+          <label class="form-check-label" for="groupLines"></label>
+            Egymást követő napok összekötése
+          </label>
+        </div>
+
         <div class="pt-3 px-2">
           <div id="yearCheckboxes"></div>
           <div id="calendar"></div>
@@ -175,7 +191,10 @@
       var map = L.map("map").setView([47.5, 19], 11);
 
       var dayLines = L.layerGroup();
+      var dayConnectors = L.layerGroup();
       var cacheMarkers = L.layerGroup();
+
+      var checkedYears = [];
 
       dayLines.addTo(map);
       cacheMarkers.addTo(map);
@@ -291,19 +310,52 @@
             coordinates.push(coordinates[0]);
           }
 
-          // Create a polyline using the coordinates
-          var randomColor =
+          // Generate a random color for the current line
+          var lineColor =
             "#" +
             Math.floor(Math.random() * 16777215)
               .toString(16)
               .padStart(6, "0"); // Generate a random color
+
+          // Check if the previous line is from the previous day, get group color if so
+          // and create connector line
+          var groupColor = lineColor;
+          if (dayLines.getLayers().length > 0) {
+            var previousLine = dayLines.getLayers().slice(-1)[0];
+            var previousDate = previousLine.options.date;
+            var currentDate = group[0].date;
+            var oneDayDifference =
+              new Date(currentDate) - new Date(previousDate) === 86400000;
+            if (oneDayDifference) {
+              groupColor = previousLine.options.groupColor;
+              dayConnectors.addLayer(
+                L.polyline(
+                  [previousLine.getLatLngs().slice(-1)[0], coordinates[0]],
+                  {
+                    color: groupColor,
+                    dashArray: "5, 12",
+                    dashOffset: "20",
+                    date: previousDate,
+                  }
+                )
+              );
+            }
+          }
+
+          // Create a polyline using the coordinates
           dayLines.addLayer(
-            L.polyline(coordinates, { color: randomColor, date: group[0].date })
+            L.polyline(coordinates, {
+              color: lineColor,
+              date: group[0].date,
+              ownColor: lineColor,
+              groupColor: groupColor,
+            })
               .bindPopup(
                 `<b>${group[0].date}</b> (${group.length}) <br />` +
                   group
                     .map(function (log) {
-                      // higlight the marker on mouseover
+                      // highlight the marker on mouseover
+                      /* html */
                       return `<a href="http://geocaching.hu/caches.geo?id=${log.cache_id}" target="_blank" onmouseover="highlightMarker('${log.waypoint}')" onmouseout="removeMarkerHighlight('${log.waypoint}')">${log.waypoint}</a>`;
                     })
                     .join(", ")
@@ -326,6 +378,7 @@
                 // scroll to the relevant day in the calendar and zoom to the day line on the map
                 scrollToDay(e.target.options.date);
                 zoomToDay(e.target.options.date);
+                //console.log(e.target.options.date, e.target.getLatLngs());
               })
               .addTo(map)
           );
@@ -371,6 +424,7 @@
         ];
         years.sort();
 
+        checkedYears = years;
         years.forEach(function (year) {
           // create a checkbox for each year
           var yearCheckbox = document.createElement("input");
@@ -384,6 +438,11 @@
             });
 
             if (yearCheckbox.checked) {
+              checkedYears.push(year);
+              checkedYears = [...new Set(checkedYears)].sort();
+              if (document.getElementById("groupLines").checked) {
+                connectGroups();
+              }
               yearLogs.forEach(function (group) {
                 dayLines.getLayers().forEach(function (layer) {
                   if (layer.options.date === group[0].date) {
@@ -415,6 +474,12 @@
                 ).checked = true;
               }
             } else {
+              checkedYears = checkedYears.filter((y) => y !== year);
+              dayConnectors.getLayers().forEach(function (layer) {
+                if (layer.options.date.startsWith(year)) {
+                  layer.removeFrom(map);
+                }
+              });
               yearLogs.forEach(function (group) {
                 dayLines.getLayers().forEach(function (layer) {
                   if (layer.options.date === group[0].date) {
@@ -525,6 +590,7 @@
         var line = dayLines.getLayers().find(function (layer) {
           return layer.options.date === date;
         });
+        //console.log(line);
         map.fitBounds(line.getBounds());
         var oldColor = line.options.color;
         line.setStyle({ color: "white" });
@@ -543,6 +609,7 @@
 
       function scrollToDay(date) {
         var dayItem = document.getElementById(date.replace(/-/g, ""));
+        //console.log(dayItem);
         dayItem.scrollIntoView({ behavior: "smooth", block: "center" });
         dayItem.style.backgroundColor = "yellow";
         setTimeout(function () {
@@ -566,17 +633,43 @@
         });
       }
 
+      function connectGroups() {
+        dayConnectors
+          .getLayers()
+          .filter((l) => checkedYears.includes(l.options.date.substring(0, 4)))
+          .forEach((l) => l.addTo(map));
+        dayLines
+          .getLayers()
+          .forEach((l) => l.setStyle({ color: l.options.groupColor }));
+      }
+
+      function disconnectGroups() {
+        dayConnectors.eachLayer(function (layer) {
+          map.removeLayer(layer);
+        });
+        dayLines
+          .getLayers()
+          .forEach((l) => l.setStyle({ color: l.options.ownColor }));
+      }
+
       function clearData() {
         logsByDay = [];
         dayLines.eachLayer(function (layer) {
           map.removeLayer(layer);
         });
+        dayLines.clearLayers();
+        dayConnectors.eachLayer(function (layer) {
+          map.removeLayer(layer);
+        });
+        dayConnectors.clearLayers();
         cacheMarkers.eachLayer(function (layer) {
           map.removeLayer(layer);
         });
+        cacheMarkers.clearLayers();
         document.getElementById("yearCheckboxes").innerHTML = "";
         document.getElementById("calendar").innerHTML = "";
         document.getElementById("userNotFoundError").style.display = "none";
+        document.getElementById("groupLines").checked = false;
       }
     </script>
   </body>
