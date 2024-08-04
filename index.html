@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Leaflet Map</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+      integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+      crossorigin="anonymous"
+    />
+
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+      }
+
+      .main {
+        height: 100vh;
+        width: 100vw;
+        display: grid;
+        grid-template-columns: 400px auto;
+        grid-template-rows: 100%;
+        grid-template-areas: "h m";
+        position: fixed;
+      }
+
+      @media only screen and (max-width: 650px) {
+        .main {
+          grid-template-columns: auto;
+          grid-template-rows: 45% auto;
+          grid-row-gap: 2px;
+          grid-template-areas:
+            "h"
+            "m";
+        }
+      }
+
+      .header {
+        grid-area: h;
+        overflow-y: scroll;
+        padding: 0.5em;
+      }
+
+      .map {
+        grid-area: m;
+      }
+
+      .error {
+        color: red;
+        font-style: italic;
+      }
+    </style>
+  </head>
+  <body onload="getAllCaches()">
+    <div
+      class="modal fade"
+      id="infoModal"
+      tabindex="-1"
+      aria-labelledby="infoModalLabel"
+      aria-hidden="true"
+    >
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="infoModalLabel">Fontos tudnivalók</h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+              aria-label="Close"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <p class="mt-3">
+              A térképen a felhasználó által megtalált ládák láthatók. Az egy
+              napon belüli megtalálásokat vonalakkal kötjük össze, a megtalálás
+              sorrendjében.
+            </p>
+            <p>
+              A térképen a ládák színei a típusokat jelölik:
+              <span style="color: Lime">Hagyományos</span>,
+              <span style="color: DodgerBlue">Multi</span>,
+              <span style="color: Fuchsia">Virtuális</span>,
+              <span style="color: DarkGreen">Esemény</span>.
+            </p>
+            <p>
+              <small>
+                <i>
+                  A mozgó ládák megtalálásait nem mutatjuk, mivel azok
+                  valószínűleg már nem a megtaláláskori helyükön vannak.
+                </i>
+              </small>
+            </p>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="main">
+      <div class="header">
+        <h1>GeoNapló</h1>
+
+        <form onsubmit="getData(); return false;">
+          <div class="form-group">
+            <label for="gcUserInput">Geocaching.hu felhasználónév</label>
+            <input
+              id="gcUserInput"
+              name="gcUserInput"
+              placeholder="az_en_felhasznalonevem"
+              type="text"
+              required="required"
+              class="form-control"
+            />
+          </div>
+          <div
+            class="form-group error"
+            id="userNotFoundError"
+            style="display: none"
+          >
+            Nincs ilyen felhasználó.
+          </div>
+          <div class="form-group mt-1">
+            <button
+              name="submit"
+              type="submit"
+              class="btn btn-primary"
+              id="loadBtn"
+              disabled
+            >
+              Elküld
+            </button>
+          </div>
+        </form>
+
+        <a href="#" data-bs-toggle="modal" data-bs-target="#infoModal">
+          Fontos tudnivalók
+        </a>
+
+        <div class="pt-3 px-2">
+          <div id="yearCheckboxes"></div>
+          <div id="calendar"></div>
+        </div>
+      </div>
+      <div id="map" class="map"></div>
+    </div>
+
+    <script
+      src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+      integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
+      crossorigin="anonymous"
+    ></script>
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script>
+      var cacheData = [];
+      var userData = [];
+      var logsByDay = [];
+
+      // Create a Leaflet map
+      var map = L.map("map").setView([47.5, 19], 11);
+
+      var dayLines = L.layerGroup();
+      var cacheMarkers = L.layerGroup();
+
+      dayLines.addTo(map);
+      cacheMarkers.addTo(map);
+
+      var overlayMaps = {
+        "Day lines": dayLines,
+        Caches: cacheMarkers,
+      };
+      var layerControl = L.control.layers().addTo(map);
+      layerControl.addOverlay(dayLines, "Day lines");
+      layerControl.addOverlay(cacheMarkers, "Caches");
+
+      // Add OpenStreetMap tiles as the background
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution:
+          'Map data &copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors',
+        maxZoom: 18,
+      }).addTo(map);
+
+      async function getAllCaches() {
+        try {
+          const response = await fetch(
+            "https://api.geocaching.hu/cachesbychange?fields=id,nickname,type,tipus,status,allapot,lat,lon,waypoint"
+          );
+          cacheData = await response.json();
+          document.getElementById("loadBtn").disabled = false;
+        } catch (error) {
+          console.error("Error:", error);
+        }
+      }
+
+      async function getData() {
+        // DOWNLOAD DATA FROM GEOCACHING.HU API
+        clearData();
+        var url = "";
+        var gcUser = document.getElementById("gcUserInput").value;
+        try {
+          var url = `https://api.geocaching.hu/user?member=${gcUser}&fields=id`;
+          const userIdResponse = await fetch(url);
+          const userIdData = await userIdResponse.json();
+          if (!userIdData.id) {
+            throw new Error("User not found");
+          }
+          var gcUserID = userIdData.id;
+        } catch (error) {
+          console.error("Error:", error);
+          document.getElementById("userNotFoundError").style.display = "block";
+          return;
+        }
+
+        try {
+          url = `https://api.geocaching.hu/logsbyuser?userid=${gcUserID}&fields=waypoint,date,notes,logtype,cache_id`;
+          const userResponse = await fetch(url);
+          userData = await userResponse.json();
+        } catch (error) {
+          console.error("Error:", error);
+          document.getElementById("userNotFoundError").style.display = "block";
+          return;
+        }
+
+        // MERGE CACHE DATA WITH LOG DATA
+        userData.forEach(function (log) {
+          var cache = cacheData.find(function (cache) {
+            return cache.id === log.cache_id;
+          });
+
+          if (cache) {
+            for (var key in cache) {
+              if (cache.hasOwnProperty(key)) {
+                log[key] = cache[key];
+              }
+            }
+          }
+
+          log.datetime = log.date;
+          log.date = log.date.split(" ")[0];
+        });
+
+        // GROUP LOGS BY DAY
+        userData
+          .filter((log) => log.type != "6")
+          .forEach(function (log) {
+            var dateExists = false;
+            logsByDay.forEach(function (group) {
+              if (group[0].date === log.date) {
+                group.push(log);
+                dateExists = true;
+              }
+            });
+            if (!dateExists) {
+              logsByDay.push([log]);
+            }
+          });
+        logsByDay.sort(function (a, b) {
+          return new Date(a[0].date) - new Date(b[0].date);
+        });
+
+        // CREATE POLYLINES FOR EACH DAY
+        lines = [];
+        logsByDay.forEach(function (group) {
+          // Sort the logs by datetime
+          group.sort(function (a, b) {
+            return new Date(a.datetime) - new Date(b.datetime);
+          });
+
+          // Create an array of coordinates
+          var coordinates = group.map(function (log) {
+            return [log.lat, log.lon];
+          });
+
+          // Create a line, even if there is only one coordinate
+          if (coordinates.length < 2) {
+            coordinates.push(coordinates[0]);
+          }
+
+          // Create a polyline using the coordinates
+          var randomColor =
+            "#" +
+            Math.floor(Math.random() * 16777215)
+              .toString(16)
+              .padStart(6, "0"); // Generate a random color
+          dayLines.addLayer(
+            L.polyline(coordinates, { color: randomColor, date: group[0].date })
+              .bindPopup(
+                `<b>${group[0].date}</b> (${group.length}) <br />` +
+                  group
+                    .map(function (log) {
+                      // higlight the marker on mouseover
+                      return `<a href="http://geocaching.hu/caches.geo?id=${log.cache_id}" target="_blank" onmouseover="highlightMarker('${log.waypoint}')" onmouseout="removeMarkerHighlight('${log.waypoint}')">${log.waypoint}</a>`;
+                    })
+                    .join(", ")
+              )
+              .on("mouseover", function (e) {
+                // highlight the relevant day in the calendar
+                e.target.setStyle({ weight: 6 });
+                document.getElementById(
+                  e.target.options.date.replace(/-/g, "")
+                ).style.backgroundColor = "yellow";
+              })
+              .on("mouseout", function (e) {
+                // remove the highlight from the calendar
+                e.target.setStyle({ weight: 3 });
+                document.getElementById(
+                  e.target.options.date.replace(/-/g, "")
+                ).style.backgroundColor = null;
+              })
+              .on("click", function (e) {
+                // scroll to the relevant day in the calendar and zoom to the day line on the map
+                scrollToDay(e.target.options.date);
+                zoomToDay(e.target.options.date);
+              })
+              .addTo(map)
+          );
+        });
+
+        userData
+          .filter((log) => log.type != "6")
+          .forEach(function (log) {
+            colors = {
+              1: "Lime",
+              2: "DodgerBlue",
+              3: "Fuchsia",
+              4: "DarkGreen",
+            };
+
+            cacheMarkers.addLayer(
+              L.circleMarker([log.lat, log.lon], {
+                radius: 5,
+                fillColor: colors[log.type],
+                color: "#000",
+                weight: 1,
+                opacity: 1,
+                fillOpacity: 0.6,
+                wpt: log.waypoint,
+              })
+                .bindPopup(
+                  `<b><a href="http://geocaching.hu/caches.geo?id=${
+                    log.cache_id
+                  }" target="_blank">${log.waypoint}</a> ${log.nickname}</b> (${
+                    log.tipus
+                  }) <br /> <a href="#" onclick="scrollToDay('${
+                    log.date
+                  }');zoomToDay('${log.date}')">${
+                    log.date
+                  }</a> ${log.datetime.substr(11, 5)} <br /> ${log.notes}`
+                )
+                .addTo(map)
+            );
+          });
+
+        var years = [
+          ...new Set(userData.map((log) => log.date.substring(0, 4))),
+        ];
+        years.sort();
+
+        years.forEach(function (year) {
+          // create a checkbox for each year
+          var yearCheckbox = document.createElement("input");
+          yearCheckbox.type = "checkbox";
+          yearCheckbox.classList.add("yearCheckbox");
+          yearCheckbox.checked = true;
+          yearCheckbox.id = year + "Checkbox";
+          yearCheckbox.addEventListener("change", function () {
+            var yearLogs = logsByDay.filter(function (group) {
+              return group[0].date.startsWith(year);
+            });
+
+            if (yearCheckbox.checked) {
+              yearLogs.forEach(function (group) {
+                dayLines.getLayers().forEach(function (layer) {
+                  if (layer.options.date === group[0].date) {
+                    layer.addTo(map);
+                  }
+                });
+                cacheMarkers.getLayers().forEach(function (layer) {
+                  if (
+                    group.find(function (log) {
+                      return log.waypoint === layer.options.wpt;
+                    })
+                  ) {
+                    layer.addTo(map);
+                  }
+                });
+              });
+              document.getElementById(year + "Div").style.display = "block";
+
+              // If all year checkboxes are checked, check the "toggle all years" checkbox
+              var allYearCheckboxes =
+                document.getElementsByClassName("yearCheckbox");
+              if (
+                Array.from(allYearCheckboxes).every(function (checkbox) {
+                  return checkbox.checked;
+                })
+              ) {
+                document.getElementById(
+                  "toggleALlYearsCheckbox"
+                ).checked = true;
+              }
+            } else {
+              yearLogs.forEach(function (group) {
+                dayLines.getLayers().forEach(function (layer) {
+                  if (layer.options.date === group[0].date) {
+                    layer.removeFrom(map);
+                  }
+                });
+                cacheMarkers.getLayers().forEach(function (layer) {
+                  if (
+                    group.find(function (log) {
+                      return log.waypoint === layer.options.wpt;
+                    })
+                  ) {
+                    layer.removeFrom(map);
+                  }
+                });
+              });
+              document.getElementById(year + "Div").style.display = "none";
+              document.getElementById("toggleALlYearsCheckbox").checked = false;
+            }
+          });
+          var yearLabel = document.createElement("label");
+          yearLabel.htmlFor = year + "Checkbox";
+          yearLabel.innerHTML = year;
+          yearLabel.classList.add("px-1");
+
+          var checkBox = document.createElement("span");
+          checkBox.style.display = "inline-block";
+          checkBox.appendChild(yearCheckbox);
+          checkBox.appendChild(yearLabel);
+          document.getElementById("yearCheckboxes").appendChild(checkBox);
+
+          // actually create entries for each year
+          var yearDiv = document.createElement("div");
+          yearDiv.id = year + "Div";
+          yearDiv.innerHTML = `<h2>${year} <span style="font-size:0.5em">(${
+            [
+              ...new Set(
+                userData
+                  .filter((log) => log.logtype === "1")
+                  .map((log) => log.date)
+                  .filter((date) => date.startsWith(year))
+              ),
+            ].length
+          } nap, ${
+            userData
+              .filter(function (log) {
+                return log.date.startsWith(year);
+              })
+              .filter((log) => log.logtype === "1").length
+          } megtalálás)</span></h2>`;
+          document.getElementById("calendar").appendChild(yearDiv);
+
+          var yearLogs = logsByDay.filter(function (group) {
+            return group[0].date.startsWith(year);
+          });
+
+          var yearList = document.createElement("ul");
+          yearLogs.forEach(function (group) {
+            var dayItem = document.createElement("li");
+            dayItem.id = group[0].date.replace(/-/g, "");
+            dayItem.class = "dayItem";
+            dayItem.innerHTML = `<b><a href="#" onclick="zoomToDay('${group[0].date}')">${group[0].date}</b></a> (${group.length})`;
+            dayItem.onmouseover = function () {
+              dayLines.getLayers().forEach(function (layer) {
+                if (layer.options.date === group[0].date) {
+                  layer.setStyle({ weight: 6 });
+                }
+              });
+            };
+            dayItem.onmouseout = function () {
+              dayLines.getLayers().forEach(function (layer) {
+                if (layer.options.date === group[0].date) {
+                  layer.setStyle({ weight: 3 });
+                }
+              });
+            };
+            yearList.appendChild(dayItem);
+          });
+
+          yearDiv.appendChild(yearList);
+        });
+
+        // Add a checkbox to toggle all years
+        var toggleALlYears = document.createElement("span");
+        var toggleALlYearsCheckbox = document.createElement("input");
+        toggleALlYearsCheckbox.type = "checkbox";
+        toggleALlYearsCheckbox.checked = true;
+        toggleALlYearsCheckbox.id = "toggleALlYearsCheckbox";
+        toggleALlYearsCheckbox.addEventListener("change", function () {
+          var yearCheckboxes = document
+            .getElementById("yearCheckboxes")
+            .getElementsByTagName("input");
+          for (var i = 0; i < yearCheckboxes.length; i++) {
+            yearCheckboxes[i].checked = toggleALlYearsCheckbox.checked;
+            yearCheckboxes[i].dispatchEvent(new Event("change"));
+          }
+        });
+        var toggleALlYearsLabel = document.createElement("label");
+        toggleALlYearsLabel.htmlFor = "toggleALlYearsCheckbox";
+        toggleALlYearsLabel.innerHTML = "Összes év";
+        toggleALlYearsLabel.classList.add("px-1");
+        toggleALlYears.appendChild(toggleALlYearsCheckbox);
+        toggleALlYears.appendChild(toggleALlYearsLabel);
+        document.getElementById("yearCheckboxes").appendChild(toggleALlYears);
+      }
+
+      function zoomToDay(date) {
+        var line = dayLines.getLayers().find(function (layer) {
+          return layer.options.date === date;
+        });
+        map.fitBounds(line.getBounds());
+        var oldColor = line.options.color;
+        line.setStyle({ color: "white" });
+        const blinkInterval = setInterval(function () {
+          if (line.options.color === "white") {
+            line.setStyle({ color: oldColor });
+          } else {
+            line.setStyle({ color: "white" });
+          }
+        }, 150);
+        setTimeout(function () {
+          clearInterval(blinkInterval);
+          line.setStyle({ color: oldColor });
+        }, 1500);
+      }
+
+      function scrollToDay(date) {
+        var dayItem = document.getElementById(date.replace(/-/g, ""));
+        dayItem.scrollIntoView({ behavior: "smooth", block: "center" });
+        dayItem.style.backgroundColor = "yellow";
+        setTimeout(function () {
+          dayItem.style.backgroundColor = null;
+        }, 2500);
+      }
+
+      function highlightMarker(wpt) {
+        cacheMarkers.getLayers().forEach(function (layer) {
+          if (layer.options.wpt === wpt) {
+            layer.setStyle({ color: "yellow", radius: 8, weight: 3 });
+          }
+        });
+      }
+
+      function removeMarkerHighlight(wpt) {
+        cacheMarkers.getLayers().forEach(function (layer) {
+          if (layer.options.wpt === wpt) {
+            layer.setStyle({ color: "#000", radius: 5, weight: 1 });
+          }
+        });
+      }
+
+      function clearData() {
+        logsByDay = [];
+        dayLines.eachLayer(function (layer) {
+          map.removeLayer(layer);
+        });
+        cacheMarkers.eachLayer(function (layer) {
+          map.removeLayer(layer);
+        });
+        document.getElementById("yearCheckboxes").innerHTML = "";
+        document.getElementById("calendar").innerHTML = "";
+        document.getElementById("userNotFoundError").style.display = "none";
+      }
+    </script>
+  </body>
+</html>
